@@ -51,7 +51,7 @@ jobs:
         run: |
           sudo apt remove -y '*cloud*' '*firefox*' '*chrome*' '*dotnet*' '*php*'
           sudo apt update -y && sudo apt upgrade -y
-          sudo apt install -y build-essential clang flex bison g++ gawk gettext libncurses-dev libssl-dev python3-setuptools rsync swig unzip zlib1g-dev file wget llvm
+          sudo apt install -y build-essential clang flex bison g++ gawk gettext libncurses-dev libssl-dev python3-setuptools rsync swig unzip zlib1g-dev file wget llvm golang
           sudo apt autoremove -y && sudo apt clean -y
 
       - name: Checkout remote repository
@@ -115,11 +115,7 @@ jobs:
           ### 📝 Build Information
           - **Target:** [Flint 2 (GL-MT6000)](https://openwrt.org/toh/gl.inet/gl-mt6000)
           - **Configuration:** [${{ env.CONFIG_FILE }}](${{ env.CONFIG_FILE }})
-          - **WiFi UCODE scripts**
-          - **Wireguard VPN**
-          - **Policy Based Routing**
-          - **Ad Block Fast**
-          - **REMOVED:** odhcp, upnp, iptables, avahi, samba, usb storage..." --title "OpenWrt Custom Release for Flint 2 (${{ needs.check_commits.outputs.release_prefix }}-${RELEASE_DATE})" firmware/*
+          - **REMOVED:** upnp, iptables, avahi, samba, usb storage..." --title "OpenWrt Custom Release for Flint 2 (${{ needs.check_commits.outputs.release_prefix }}-${RELEASE_DATE})" firmware/*
 
       - name: Clean up old releases
         run: |
