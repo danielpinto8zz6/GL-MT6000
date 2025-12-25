@@ -1,0 +1,23 @@
+#!/bin/sh
+
+# 1. Move Dnsmasq to port 54 so port 53 is free for AdGuard
+uci set dhcp.@dnsmasq[0].port='54'
+
+# 2. Advertise AdGuard (10.0.0.1) only if not already configured
+# We grab the current list and check if '6,10.0.0.1' is inside.
+DNS_OPT="6,10.0.0.1"
+CURRENT_OPTS=$(uci -q get dhcp.lan.dhcp_option)
+
+# The grep -F ensures we match the fixed string exactly.
+# If the string is NOT found (!), we add it.
+if ! echo "$CURRENT_OPTS" | grep -qF "$DNS_OPT"; then
+    uci add_list dhcp.lan.dhcp_option="$DNS_OPT"
+fi
+
+# 3. Commit changes
+uci commit dhcp
+
+# 4. Restart dnsmasq to apply
+/etc/init.d/dnsmasq restart
+
+exit 0
