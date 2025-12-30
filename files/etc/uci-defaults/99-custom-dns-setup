@@ -1,23 +1,40 @@
 #!/bin/sh
 
-# 1. Move Dnsmasq to port 54 so port 53 is free for AdGuard
+# --- 1. Dnsmasq Configuration (Backend Helper on Port 54) ---
+# We move Dnsmasq to 54 so it can provide hostnames to AdGuard
 uci set dhcp.@dnsmasq[0].port='54'
+uci set dhcp.@dnsmasq[0].cachesize='0'
+uci set dhcp.@dnsmasq[0].noresolv='1'
+uci set dhcp.@dnsmasq[0].localserver='/lan/'
 
-# 2. Advertise AdGuard (10.0.0.1) only if not already configured
-# We grab the current list and check if '6,10.0.0.1' is inside.
+# --- 2. DHCP DNS Advertising (Option 6 for IPv4 & IPv6) ---
+# Tells clients: "Talk to 10.0.0.1 (AdGuard) for all DNS needs"
 DNS_OPT="6,10.0.0.1"
 CURRENT_OPTS=$(uci -q get dhcp.lan.dhcp_option)
-
-# The grep -F ensures we match the fixed string exactly.
-# If the string is NOT found (!), we add it.
 if ! echo "$CURRENT_OPTS" | grep -qF "$DNS_OPT"; then
     uci add_list dhcp.lan.dhcp_option="$DNS_OPT"
 fi
 
-# 3. Commit changes
+# Point IPv6 clients to the router for DNS as well
+uci set dhcp.lan.dns='fe80::1'
+
 uci commit dhcp
-
-# 4. Restart dnsmasq to apply
 /etc/init.d/dnsmasq restart
+/etc/init.d/odhcpd restart
 
-exit 0
+# --- 3. Firewall Hijack (Intercept Hardcoded DNS) ---
+# Redirects any external port 53 traffic back to AdGuard
+while uci -q delete firewall.dns_hijack; do :; done
+
+uci set firewall.dns_hijack=redirect
+uci set firewall.dns_hijack.name='Force-AdGuard-DNS'
+uci set firewall.dns_hijack.src='lan'
+uci set firewall.dns_hijack.src_dport='53'
+uci set firewall.dns_hijack.dest_port='53'
+uci set firewall.dns_hijack.proto='tcp udp'
+uci set firewall.dns_hijack.target='DNAT'
+
+uci commit firewall
+/etc/init.d/firewall restart
+
+echo "MT6000 DNS Setup Complete. Port 54 used for Dnsmasq backend."
