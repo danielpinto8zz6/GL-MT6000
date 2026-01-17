@@ -9,6 +9,8 @@ on:
   push:
     branches:
       - main
+  repository_dispatch:
+    types: [remote_commit]
   schedule:
     - cron: "38 1 */3 * *"
 
@@ -44,14 +46,14 @@ jobs:
   build:
     name: Build OpenWrt
     needs: check_commits
-    if: github.event_name == 'workflow_dispatch' || needs.check_commits.outputs.new_commits == 'true'
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || needs.check_commits.outputs.new_commits == 'true'
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Install dependencies
         run: |
           sudo apt remove -y '*cloud*' '*firefox*' '*chrome*' '*dotnet*' '*php*'
           sudo apt update -y && sudo apt upgrade -y
-          sudo apt install -y build-essential clang flex bison g++ gawk gettext libncurses-dev libssl-dev python3-setuptools rsync swig unzip zlib1g-dev file wget llvm
+          sudo apt install -y build-essential clang flex bison g++ gawk gettext libncurses-dev libssl-dev python3-setuptools rsync swig unzip zlib1g-dev file wget llvm golang
           sudo apt autoremove -y && sudo apt clean -y
 
       - name: Checkout remote repository
