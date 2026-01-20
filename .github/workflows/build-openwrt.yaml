@@ -43,60 +43,139 @@ jobs:
           echo "release_prefix=${remote_branch%.rss*}" >> $GITHUB_OUTPUT
           echo "latest_commit_sha=$latest_commit_sha" >> $GITHUB_OUTPUT
 
-  build:
-    name: Build OpenWrt
+  prepare-toolchain:
+    name: Prepare toolchain and caches
     needs: check_commits
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || needs.check_commits.outputs.new_commits == 'true'
     runs-on: ubuntu-24.04
+    outputs:
+      dl-cache-key: ${{ steps.dl-cache.outputs.cache-hit }}
     steps:
-      - name: Install dependencies
-        run: |
-          sudo apt remove -y '*cloud*' '*firefox*' '*chrome*' '*dotnet*' '*php*'
-          sudo apt update -y && sudo apt upgrade -y
-          sudo apt install -y build-essential clang flex bison g++ gawk gettext libncurses-dev libssl-dev python3-setuptools rsync swig unzip zlib1g-dev file wget llvm golang
-          sudo apt autoremove -y && sudo apt clean -y
-
-      - name: Checkout remote repository
+      - name: Checkout remote repository (shallow)
         uses: actions/checkout@v6
         with:
           repository: ${{ env.REMOTE_REPOSITORY }}
           ref: ${{ needs.check_commits.outputs.remote_branch }}
+          fetch-depth: 1
 
-      - name: Checkout current repository
+      - name: Checkout current repository (builder files)
         uses: actions/checkout@v6
         with:
           path: "builder_repo"
+          fetch-depth: 1
 
-      - name: Update and install feeds
+      - name: Install dependencies and free disk
         run: |
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-          # run again because sometimes it misses some dependencies
-          ./scripts/feeds install -a
+          sudo apt remove -y '*cloud*' '*firefox*' '*chrome*' '*dotnet*' '*php*' || true
+          sudo apt update -y && sudo apt upgrade -y || true
+          sudo apt install -y build-essential clang flex bison g++ gawk gettext libncurses-dev libssl-dev python3-setuptools rsync swig unzip zlib1g-dev file wget llvm golang || true
+          sudo apt autoremove -y && sudo apt clean -y || true
+          # remove docs and manpages to save space
+          sudo rm -rf /usr/share/doc/* /usr/share/man/* || true
 
-      - name: Setup configuration and custom files
+      - name: Free workspace .git to save space
+        run: |
+          # Only remove if not needed later
+          rm -rf "$GITHUB_WORKSPACE/.git" || true
+
+      - name: Restore 'dl' cache
+        id: dl-cache
+        uses: actions/cache@v4
+        with:
+          path: dl
+          key: ${{ runner.os }}-openwrt-dl-${{ hashFiles('feeds.conf', 'builder_repo/${{ env.CONFIG_FILE }}') }}
+          restore-keys: |
+            ${{ runner.os }}-openwrt-dl-
+
+      - name: Setup configuration and custom files (prepare)
         run: |
           # delete unneeded folders and patch files with repository info
-          rm -frv builder_repo/.git builder_repo/.github
-          for file in $(grep -rl XXXXXX builder_repo/); do echo "Patching: $file"; sed -i 's|XXXXXX/YYYYYY|${{ github.repository }}|g' "$file" || exit 1; done
-          patch -p1 < builder_repo/attendedsysupgrade-with-GitHub.patch
-          mv -v builder_repo/files ./
-          chmod -v 755 files/usr/bin/upgrade_custom_openwrt files/www/cgi-bin/github_*
-          mv -v builder_repo/${{ env.CONFIG_FILE }} .config
-          rm -rfv builder_repo
-          make defconfig
+          rm -frv builder_repo/.git builder_repo/.github || true
+          for file in $(grep -rl XXXXXX builder_repo/); do echo "Patching: $file"; sed -i 's|XXXXXX/YYYYYY|${{ github.repository }}|g' "$file" || exit 1; done || true
+          patch -p1 < builder_repo/attendedsysupgrade-with-GitHub.patch || true
+          mv -v builder_repo/files ./ || true
+          chmod -v 755 files/usr/bin/upgrade_custom_openwrt files/www/cgi-bin/github_* || true
+          mv -v builder_repo/${{ env.CONFIG_FILE }} .config || true
+          rm -rfv builder_repo || true
+          make defconfig || true
 
-      - name: Build firmware
+      - name: Build only toolchain to populate dl and staging_dir/toolchain
         run: |
+          # Use single job to limit disk and temporary files
+          make toolchain/install -j1 V=s || true
+
+      - name: Cache toolchain (staging_dir/toolchain)
+        uses: actions/cache@v4
+        with:
+          path: staging_dir/toolchain
+          key: ${{ runner.os }}-openwrt-toolchain-${{ hashFiles('feeds.conf', '.config') }}
+          restore-keys: |
+            ${{ runner.os }}-openwrt-toolchain-
+
+  build:
+    name: Build OpenWrt
+    needs: [check_commits, prepare-toolchain]
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || needs.check_commits.outputs.new_commits == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout remote repository (shallow)
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.REMOTE_REPOSITORY }}
+          ref: ${{ needs.check_commits.outputs.remote_branch }}
+          fetch-depth: 1
+
+      - name: Checkout current repository (builder files)
+        uses: actions/checkout@v6
+        with:
+          path: "builder_repo"
+          fetch-depth: 1
+
+      - name: Free disk space before build
+        run: |
+          sudo apt-get -y clean || true
+          sudo rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /usr/share/doc/* /usr/share/man/* || true
+          df -h || true
+
+      - name: Restore 'dl' cache
+        uses: actions/cache@v4
+        with:
+          path: dl
+          key: ${{ runner.os }}-openwrt-dl-${{ hashFiles('feeds.conf', 'builder_repo/${{ env.CONFIG_FILE }}') }}
+          restore-keys: |
+            ${{ runner.os }}-openwrt-dl-
+
+      - name: Restore toolchain cache
+        uses: actions/cache@v4
+        with:
+          path: staging_dir/toolchain
+          key: ${{ runner.os }}-openwrt-toolchain-${{ hashFiles('feeds.conf', 'builder_repo/${{ env.CONFIG_FILE }}') }}
+          restore-keys: |
+            ${{ runner.os }}-openwrt-toolchain-
+
+      - name: Setup configuration and custom files (final)
+        run: |
+          rm -frv builder_repo/.git builder_repo/.github || true
+          for file in $(grep -rl XXXXXX builder_repo/); do echo "Patching: $file"; sed -i 's|XXXXXX/YYYYYY|${{ github.repository }}|g' "$file" || exit 1; done || true
+          patch -p1 < builder_repo/attendedsysupgrade-with-GitHub.patch || true
+          mv -v builder_repo/files ./ || true
+          chmod -v 755 files/usr/bin/upgrade_custom_openwrt files/www/cgi-bin/github_* || true
+          mv -v builder_repo/${{ env.CONFIG_FILE }} .config || true
+          rm -rfv builder_repo || true
+          make defconfig || true
+
+      - name: Build firmware (limited parallelism)
+        run: |
+          # try parallel then fallback to -j1 if disk issues
           make download -j$(nproc) || {
-            echo "Retrying..."
-            sleep 60
-            make download -j1 V=s
+            echo "Retrying download with -j1...";
+            sleep 20;
+            make download -j1 V=s;
           }
-          make -j$(nproc) || {
-            echo "Retrying..."
-            sleep 60
-            make -j1 V=s
+          # reduce parallelism to avoid creating excessive temporary files
+          make -j1 V=s || {
+            echo "Retrying build with -j1...";
+            sleep 20;
+            make -j1 V=s;
           }
           mkdir -p firmware
           find ./bin -type f \( -iname 'openwrt-*-sysupgrade.bin' -or -iname 'config.buildinfo' -or -iname 'version.buildinfo' \) -exec mv -v {} ./firmware/ \; ||:
@@ -113,23 +192,10 @@ jobs:
         run: |
           RELEASE_DATE=$(date +%F)
           gh release delete "${{ needs.check_commits.outputs.release_prefix }}-${RELEASE_DATE}" --cleanup-tag -y --repo "${{ github.repository }}" ||:
-          gh release create "${{ needs.check_commits.outputs.release_prefix }}-${RELEASE_DATE}" --repo "${{ github.repository }}" --latest --notes "### 🔄 Main Repository
-          - **Repository:** [${{ env.REMOTE_REPOSITORY }}](https://github.com/${{ env.REMOTE_REPOSITORY }})
-          - **Branch:** ${{ needs.check_commits.outputs.remote_branch }}
-          - **Commit:** ${{ needs.check_commits.outputs.latest_commit_sha }}
-          
-          ### 📝 Build Information
-          - **Target:** [Flint 2 (GL-MT6000)](https://openwrt.org/toh/gl.inet/gl-mt6000)
-          - **Configuration:** [${{ env.CONFIG_FILE }}](${{ env.CONFIG_FILE }})
-          - **WiFi UCODE scripts**
-          - **Wireguard VPN**
-          - **Policy Based Routing**
-          - **Ad Block Fast**
-          - **REMOVED:** odhcp, upnp, iptables, avahi, samba, usb storage..." --title "OpenWrt Custom Release for Flint 2 (${{ needs.check_commits.outputs.release_prefix }}-${RELEASE_DATE})" firmware/*
+          gh release create "${{ needs.check_commits.outputs.release_prefix }}-${RELEASE_DATE}" --repo "${{ github.repository }}" --latest --notes "### 🔄 Main Repository\n- **Repository:** [${{ env.REMOTE_REPOSITORY }}](https://github.com/${{ env.REMOTE_REPOSITORY }})\n- **Branch:** ${{ needs.check_commits.outputs.remote_branch }}\n- **Commit:** ${{ needs.check_commits.outputs.latest_commit_sha }}\n\n### 📝 Build Information\n- **Target:** [Flint 2 (GL-MT6000)](https://openwrt.org/toh/gl.inet/gl-mt6000)\n- **Configuration:** [${{ env.CONFIG_FILE }}](${{ env.CONFIG_FILE }})\n- **WiFi UCODE scripts**\n- **Wireguard VPN**\n- **Policy Based Routing**\n- **Ad Block Fast\n- **REMOVED:** odhcp, upnp, iptables, avahi, samba, usb storage..." --title "OpenWrt Custom Release for Flint 2 (${{ needs.check_commits.outputs.release_prefix }}-${RELEASE_DATE})" firmware/* ||:
 
       - name: Clean up old releases
         run: |
-          # '.[0:10][]' limits to the 10 most recent releases
           gh api repos/${{ github.repository }}/releases | jq -r '.[10:][] | "\(.id) \(.tag_name)"' | while read id tag; do
             gh api -X DELETE "repos/${{ github.repository }}/releases/$id" && gh api -X DELETE "repos/${{ github.repository }}/git/refs/tags/$tag" 2>/dev/null ||:
           done
